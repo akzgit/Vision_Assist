@@ -1,13 +1,17 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../services/voice_helper.dart';
 import '../services/tts_service.dart';
-import 'object_detection_screen.dart';  // Ensure you have the correct path for your screens
+import 'object_detection_screen.dart';
 import 'text_reading_screen.dart';
 import 'face_recognition_screen.dart';
 import 'currency_detection_screen.dart';
 import 'activity_recognition_screen.dart';
 import 'image_description_screen.dart';
-import 'add_face_screen.dart'; // Adding Add Face screen
+import 'add_face_screen.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 
 class WelcomeScreen extends StatefulWidget {
   @override
@@ -17,96 +21,150 @@ class WelcomeScreen extends StatefulWidget {
 class _WelcomeScreenState extends State<WelcomeScreen> {
   final TtsService _ttsService = TtsService();
   final VoiceHelper _voiceHelper = VoiceHelper();
+  static const platform = MethodChannel('com.example.vision_assist_app/volume_buttons');
+  bool _isListening = false;
+  final _record = Record();
 
   @override
   void initState() {
     super.initState();
     _speakWelcomeMessage();
-    _listenForVoiceCommand();  // Start listening for voice commands
+    _listenForDoubleVolumePress();
   }
 
   /// Speaks the welcome message with instructions for the user.
   Future<void> _speakWelcomeMessage() async {
     await _voiceHelper.giveInstructions(
-      "Welcome to the Home screen. "
-      "This app helps you with object detection, text reading, face recognition, currency detection, activity recognition, and image description. "
-      "You can control the app by voice commands or manual interaction. "
-      "To start, say 'Start' or choose a feature from the screen. "
-      "If you need help at any time, just say 'Help'."
+      "Welcome to Vision Assist Home screen. "
+      "This app helps you with: "
+      "Say 'one' or 'object detection' for object detection, "
+      "'two' or 'text reading' for text reading, "
+      "'three' or 'face recognition' for face recognition, "
+      "'four' or 'currency detection' for currency detection, "
+      "'five' or 'activity recognition' for activity recognition, "
+      "'six' or 'image description' for image description, "
+      "and 'seven' or 'add face' to add the image of faces for face recognition."
+      "You can control the app by voice commands or by manually selecting buttons on the screen. "
+      "If you need help at any time, just say 'help' or 'eight'. "
+      "Additionally, you can double press the volume up button to trigger voice commands."
     );
   }
 
-  /// Speaks the help message when the user says 'Help'.
+  /// Speaks the help message when the user says 'Help' or 'Eight'.
   Future<void> _speakHelpMessage() async {
     await _voiceHelper.giveInstructions(
       "Here are the instructions: "
-      "You can say 'Object Detection' to start detecting objects, "
-      "'Text Reading' to read text from an image, "
-      "'Face Recognition' to identify faces, "
-      "'Currency Detection' to identify currency notes, "
-      "'Activity Recognition' to recognize activities, "
-      "or 'Image Description' to get a description of an image. "
-      "You can also add a face by saying 'Add Face'. Use voice commands or tap the screen to select any feature."
+      "Say 'one' or 'object detection' for object detection, "
+      "'two' or 'text reading' for text reading, "
+      "'three' or 'face recognition' for face recognition, "
+      "'four' or 'currency detection' for currency detection, "
+      "'five' or 'activity recognition' for activity recognition, "
+      "'six' or 'image description' for image description, "
+      "and 'seven' or 'add face' to add the image of faces for face recognition. "
+      "You can control the app by voice commands or by manually selecting buttons on the screen. "
+      "If you need help at any time, just say 'help' or 'eight'. "
+      "Additionally, you can double press the volume up button to trigger voice commands."
     );
   }
 
-  /// Starts listening for voice commands.
-  Future<void> _listenForVoiceCommand() async {
-    String? command = await _voiceHelper.listenForCommand();
-    if (command != null) {
-      _processCommand(command);
+  /// Listen for double press of the volume button.
+  Future<void> _listenForDoubleVolumePress() async {
+    platform.setMethodCallHandler((call) async {
+      if (call.method == 'volumeUpPressed') {
+        if (!_isListening) {
+          await _recordAudioAndRecognize();
+        }
+      }
+    });
+  }
+
+  /// Record audio and send it to Whisper API for transcription.
+  Future<void> _recordAudioAndRecognize() async {
+    _isListening = true;
+
+    // Stop TTS before starting recording
+    _ttsService.stop(); // Ensure TTS stops before recording starts
+
+    final tempDir = await getTemporaryDirectory();
+    final filePath = '${tempDir.path}/voice_command.m4a';
+
+    if (await _record.hasPermission()) {
+      await _record.start(
+        path: filePath,
+        encoder: AudioEncoder.aacLc,
+      );
+
+      await Future.delayed(Duration(seconds: 5));  // Record for 5 seconds
+      await _record.stop();
+
+      File audioFile = File(filePath);
+      String? command = await _voiceHelper.recognizeSpeechWithWhisper(audioFile);
+
+      if (command != null) {
+        print('Recognized command: $command');
+        _processCommand(command);
+      } else {
+        _ttsService.speak('Sorry, I could not understand the command.');
+      }
+
+      _isListening = false;
     }
   }
 
-  /// Processes the recognized voice command.
+  /// Process the recognized voice command.
   void _processCommand(String command) {
-    if (command.toLowerCase().contains('help')) {
+    // Convert command to lowercase and trim punctuation for consistent matching
+    String normalizedCommand = command.toLowerCase().replaceAll(RegExp(r'[^\w\s]+'), '').trim();
+
+    print('Identified Command: $normalizedCommand');
+
+    // Check for number-based or text-based command matches
+    if (normalizedCommand == 'help' || normalizedCommand == 'eight' || normalizedCommand == '8') {
       _speakHelpMessage();
-    } else if (command.toLowerCase().contains('object detection')) {
+    } else if (normalizedCommand == 'object detection' || normalizedCommand == 'one' || normalizedCommand == '1') {
       _ttsService.speak('Object Detection selected.');
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (context) => ObjectDetectionScreen()),
-      );
-    } else if (command.toLowerCase().contains('text reading')) {
+      _navigateToScreen(ObjectDetectionScreen());
+    } else if (normalizedCommand == 'text reading' || normalizedCommand == 'two' || normalizedCommand == '2') {
       _ttsService.speak('Text Reading selected.');
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (context) => TextReadingScreen()),
-      );
-    } else if (command.toLowerCase().contains('face recognition')) {
+      _navigateToScreen(TextReadingScreen());
+    } else if (normalizedCommand == 'face recognition' || normalizedCommand == 'three' || normalizedCommand == '3') {
       _ttsService.speak('Face Recognition selected.');
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (context) => FaceRecognitionScreen()),
-      );
-    } else if (command.toLowerCase().contains('currency detection')) {
+      _navigateToScreen(FaceRecognitionScreen());
+    } else if (normalizedCommand == 'currency detection' || normalizedCommand == 'four' || normalizedCommand == '4') {
       _ttsService.speak('Currency Detection selected.');
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (context) => CurrencyDetectionScreen()),
-      );
-    } else if (command.toLowerCase().contains('activity recognition')) {
+      _navigateToScreen(CurrencyDetectionScreen());
+    } else if (normalizedCommand == 'activity recognition' || normalizedCommand == 'five' || normalizedCommand == '5') {
       _ttsService.speak('Activity Recognition selected.');
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (context) => ActivityRecognitionScreen()),
-      );
-    } else if (command.toLowerCase().contains('image description')) {
+      _navigateToScreen(ActivityRecognitionScreen());
+    } else if (normalizedCommand == 'image description' || normalizedCommand == 'six' || normalizedCommand == '6') {
       _ttsService.speak('Image Description selected.');
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (context) => ImageDescriptionScreen()),
-      );
-    } else if (command.toLowerCase().contains('add face')) {
+      _navigateToScreen(ImageDescriptionScreen());
+    } else if (normalizedCommand == 'add face' || normalizedCommand == 'seven' || normalizedCommand == '7') {
       _ttsService.speak('Add Face selected.');
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (context) => AddFaceScreen()),
-      );
+      _navigateToScreen(AddFaceScreen());
     } else {
       _ttsService.speak('Unknown command. Please say help for instructions.');
     }
+  }
+
+  /// Navigate to the selected screen and ensure proper reset of state
+  void _navigateToScreen(Widget screen) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => screen),
+    ).then((_) {
+      // Reset the state when coming back to the home screen
+      _resetState();
+    });
+  }
+
+  /// Reset the state when returning to the home screen
+  void _resetState() {
+    _speakWelcomeMessage();
+    _listenForDoubleVolumePress();  // Re-enable listening for double press
+    setState(() {
+      _isListening = false;
+    });
   }
 
   @override
@@ -119,99 +177,67 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Home'),  // Changed from 'Welcome to Vision Assist' to 'Home'
+        title: Text('Home'),
       ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              'Home',
-              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-            ),
-            SizedBox(height: 16),
-            Text(
-              'Say "Start" or tap a button to begin.',
-              style: TextStyle(fontSize: 18),
-            ),
-            SizedBox(height: 32),
-            ElevatedButton(
-              onPressed: () {
-                _ttsService.speak('Object Detection selected.');
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => ObjectDetectionScreen()),
-                );
-              },
-              child: Text('Object Detection'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                _ttsService.speak('Text Reading selected.');
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => TextReadingScreen()),
-                );
-              },
-              child: Text('Text Reading'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                _ttsService.speak('Face Recognition selected.');
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => FaceRecognitionScreen()),
-                );
-              },
-              child: Text('Face Recognition'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                _ttsService.speak('Currency Detection selected.');
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => CurrencyDetectionScreen()),
-                );
-              },
-              child: Text('Currency Detection'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                _ttsService.speak('Activity Recognition selected.');
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => ActivityRecognitionScreen()),
-                );
-              },
-              child: Text('Activity Recognition'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                _ttsService.speak('Image Description selected.');
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => ImageDescriptionScreen()),
-                );
-              },
-              child: Text('Image Description'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                _ttsService.speak('Add Face selected.');
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => AddFaceScreen()),
-                );
-              },
-              child: Text('Add Face'),
-            ),
-            SizedBox(height: 32),
-            ElevatedButton(
-              onPressed: _speakHelpMessage,  // Manual button to get help instructions
-              child: Text('Help'),
-            ),
-          ],
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Center(
+          child: GridView.count(
+            crossAxisCount: 2, // Two columns
+            crossAxisSpacing: 16, // Space between buttons horizontally
+            mainAxisSpacing: 16, // Space between buttons vertically
+            children: [
+              _buildFeatureButton('1', 'Object Detection', Colors.blue, ObjectDetectionScreen()),
+              _buildFeatureButton('2', 'Text Reading', Colors.green, TextReadingScreen()),
+              _buildFeatureButton('3', 'Face Recognition', Colors.purple, FaceRecognitionScreen()),
+              _buildFeatureButton('4', 'Currency Detection', Colors.orange, CurrencyDetectionScreen()),
+              _buildFeatureButton('5', 'Activity Recognition', Colors.red, ActivityRecognitionScreen()),
+              _buildFeatureButton('6', 'Image Description', Colors.teal, ImageDescriptionScreen()),
+              _buildFeatureButton('7', 'Add Face', Colors.brown, AddFaceScreen()),
+              _buildFeatureButton('8', 'Help', Colors.pink, null, _speakHelpMessage),
+            ],
+          ),
         ),
+      ),
+    );
+  }
+
+  /// A helper method to build each feature button with color, text, and navigation.
+  Widget _buildFeatureButton(String number, String label, Color color, Widget? screen, [Function? customOnPressed]) {
+    return ElevatedButton(
+      onPressed: () {
+        _ttsService.speak('$label selected.');
+        if (customOnPressed != null) {
+          customOnPressed();
+        } else if (screen != null) {
+          _navigateToScreen(screen);
+        }
+      },
+      style: ElevatedButton.styleFrom(
+        backgroundColor: color,  // Replaced 'primary' with 'backgroundColor'
+        padding: EdgeInsets.all(24), // Button padding for larger size
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), // Rounded corners
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          FittedBox(
+            child: Text(
+              number,
+              style: TextStyle(fontSize: 72, fontWeight: FontWeight.bold, color: Colors.white), // Large number
+            ),
+          ),
+          SizedBox(height: 8),
+          Flexible(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                label,
+                style: TextStyle(fontSize: 20, color: Colors.white), // Scaled label below the number
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -1,10 +1,12 @@
 import 'dart:io';  // Required for handling file system
+import 'dart:convert';  // Required for jsonDecode
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
-import '../services/voice_helper.dart';  // Ensure the correct path to voice helper
-import '../services/tts_service.dart';   // Ensure the correct path to TTS service
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
+import '../services/voice_helper.dart';  
+import '../services/tts_service.dart';  
 
 class CurrencyDetectionScreen extends StatefulWidget {
   @override
@@ -16,6 +18,7 @@ class _CurrencyDetectionScreenState extends State<CurrencyDetectionScreen> {
   bool _isProcessing = false;  // To track whether the system is processing
   final TtsService _ttsService = TtsService();
   final VoiceHelper _voiceHelper = VoiceHelper();
+  final _record = Record();  // For audio recording
 
   @override
   void initState() {
@@ -95,7 +98,7 @@ class _CurrencyDetectionScreenState extends State<CurrencyDetectionScreen> {
   /// Extract the predicted currency from the backend response
   String _extractCurrency(String response) {
     try {
-      var jsonResponse = jsonDecode(response);
+      var jsonResponse = jsonDecode(response);  // jsonDecode to parse JSON response
 
       // Debugging print statement to log response
       print('Currency Response: $jsonResponse');
@@ -105,6 +108,40 @@ class _CurrencyDetectionScreenState extends State<CurrencyDetectionScreen> {
     } catch (e) {
       print('Error in _extractCurrency: $e');
       return 'Unable to extract currency information.';
+    }
+  }
+
+  /// Record audio and recognize command using Whisper API
+  Future<String?> _recordAudioAndRecognize() async {
+    // Prepare for recording
+    final tempDir = await getTemporaryDirectory();
+    final filePath = '${tempDir.path}/currency_command.m4a';
+
+    // Start recording
+    if (await _record.hasPermission()) {
+      await _record.start(
+        path: filePath,
+        encoder: AudioEncoder.aacLc, // Set format as AAC
+      );
+
+      await Future.delayed(Duration(seconds: 5));  // Record for 5 seconds
+      await _record.stop();
+
+      // Send audio file to Whisper API
+      File audioFile = File(filePath);
+      String? command = await _voiceHelper.recognizeSpeechWithWhisper(audioFile);
+
+      return command;  // Return the recognized command
+    }
+    return null;
+  }
+
+  /// Process the recognized voice command
+  void _processCommand(String command) {
+    if (command.toLowerCase().contains('start')) {
+      _detectCurrency();
+    } else {
+      _ttsService.speak('Unknown command. Please try again.');
     }
   }
 

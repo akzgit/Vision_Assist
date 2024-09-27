@@ -21,15 +21,22 @@ import cv2
 from io import BytesIO
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+import face_recognition
+from .facerec import SimpleFacerec 
+
 
 # Logging setup
 logger = logging.getLogger(__name__)
+
+# Initialize face recognition system
+face_rec = SimpleFacerec()
+face_rec.load_encoding_images(os.path.join(settings.MEDIA_ROOT, 'faces'))
 
 # Ensure your API key is correctly loaded from the environment
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
 # Load YOLO model
-yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5m', pretrained=True)
+yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5l', pretrained=True)
 
 # Load MoViNet-A2 Model for Activity Recognition
 activity_model_path = os.path.join(settings.MEDIA_ROOT, 'models', 'movinet_a2_kinetics_600')
@@ -114,10 +121,16 @@ def object_detection(request):
             
             objects_detected = results.pandas().xyxy[0].to_dict(orient="records")
 
-            # Log detected objects
-            logger.info(f"Objects detected: {objects_detected}")
+            # Set a confidence threshold (for example, 0.5 or 50%)
+            confidence_threshold = 0.6  # Adjust this value to improve accuracy (0.5 = 50%)
+            filtered_objects = [
+                obj for obj in objects_detected if obj['confidence'] >= confidence_threshold
+            ]
 
-            return Response({"detected_objects": objects_detected})
+            # Log filtered objects
+            logger.info(f"Filtered objects with confidence >= {confidence_threshold}: {filtered_objects}")
+
+            return Response({"detected_objects": filtered_objects})
 
         except Exception as e:
             logger.error(f"Error processing object detection: {str(e)}")
@@ -126,42 +139,67 @@ def object_detection(request):
         logger.warning("No file uploaded in the request")
         return Response({"error": "No file uploaded"}, status=400)
     
-# Add Face for Face Recognition
+    
 @api_view(['POST'])
 def add_face(request):
-    if 'file' in request.FILES and 'name' in request.data:
-        image = request.FILES['file']
-        name = request.data['name']
+    """
+    Endpoint to add a face. It receives images and a name, saving them for face recognition.
+    """
+    # Check if 'files' and 'name' are in the request
+    if 'files' not in request.FILES or 'name' not in request.data:
+        logger.error("No files uploaded or name missing")
+        return Response({"error": "No files uploaded or name missing"}, status=400)
+    
+    images = request.FILES.getlist('files')
+    name = request.data['name'].strip()  # Strip any extra spaces from the name
+    
+    # Check if at least one image is provided
+    if len(images) == 0:
+        logger.error("No images provided")
+        return Response({"error": "No images provided"}, status=400)
 
-        try:
-            # Save face image
-            file_path = default_storage.save(os.path.join('faces', name + "_" + image.name), image)
+    try:
+        # Save each image for the person
+        for image in images:
+            # Validate image type (optional but recommended)
+            if image.content_type not in ['image/jpeg', 'image/png']:
+                logger.error(f"Invalid file type {image.content_type} for image {image.name}")
+                return Response({"error": f"Invalid file type {image.content_type}"}, status=400)
+
+            # Save the image
+            file_path = default_storage.save(os.path.join('faces', f"{name}_{image.name}"), image)
             full_file_path = os.path.join(settings.MEDIA_ROOT, file_path)
 
-            # Check if file is saved
+            # Check if the file was successfully saved
             if not os.path.exists(full_file_path):
                 logger.error(f"Face file does not exist at {full_file_path}")
-                return Response({"error": "Face file does not exist"}, status=500)
+                return Response({"error": f"Face file does not exist at {full_file_path}"}, status=500)
 
-            # Add face logic here (you may add to a database or train a face recognition model)
-            logger.info(f"Face added for {name}")
+            logger.info(f"Face added for {name}, image saved at {full_file_path}")
 
-            return Response({"message": "Face added successfully for " + name})
+        # Reload face encodings (assuming face_rec is a valid instance)
+        face_rec.load_encoding_images(os.path.join(settings.MEDIA_ROOT, 'faces'))
+        logger.info(f"Face added successfully for {name}")
+        return Response({"message": f"Face added successfully for {name}"})
 
-        except Exception as e:
-            logger.error(f"Error adding face: {str(e)}")
-            return Response({"error": "Add face error"}, status=500)
-    else:
-        return Response({"error": "No file uploaded or name missing"}, status=400)
+    except Exception as e:
+        logger.error(f"Error adding face: {str(e)}")
+        return Response({"error": "Add face error", "details": str(e)}, status=500)
 
-# Recognize Face
+
+
+# Recognize Face from the video stream
 @api_view(['POST'])
 def recognize_face(request):
+    """
+    Endpoint to recognize faces from an uploaded image.
+    It returns the recognized person's name.
+    """
     if 'file' in request.FILES:
         image = request.FILES['file']
 
         try:
-            # Save face image
+            # Save the uploaded image temporarily
             file_path = default_storage.save(os.path.join('uploads', image.name), image)
             full_file_path = os.path.join(settings.MEDIA_ROOT, file_path)
 
@@ -170,17 +208,25 @@ def recognize_face(request):
                 logger.error(f"Face file does not exist at {full_file_path}")
                 return Response({"error": "Face file does not exist"}, status=500)
 
-            # Face recognition logic here
-            logger.info("Face recognition logic goes here")
+            # Load the image for face recognition
+            img = cv2.imread(full_file_path)
 
-            return Response({"recognized_faces": []})
+            # Detect and recognize faces in the image
+            face_locations, face_names = face_rec.detect_known_faces(img)
+
+            if face_names:
+                recognized_faces = [{"name": name} for name in face_names]
+                logger.info(f"Recognized faces: {recognized_faces}")
+                return Response({"recognized_faces": recognized_faces})
+            else:
+                logger.info("No faces recognized.")
+                return Response({"recognized_faces": []})
 
         except Exception as e:
             logger.error(f"Error recognizing face: {str(e)}")
             return Response({"error": "Face recognition error"}, status=500)
     else:
         return Response({"error": "No file uploaded"}, status=400)
-
 # Function to encode the image in base64 format
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:
@@ -208,7 +254,7 @@ def read_text(request):
 
         # Prepare the payload for GPT-4 mini, requesting pure text extraction
         payload = {
-            "model": "gpt-4o-mini",
+            "model": "gpt-4o",
             "messages": [
                 {
                     "role": "user",

@@ -135,7 +135,7 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 # Add your local IP or localhost to allowed hosts
-ALLOWED_HOSTS = ["192.168.137.129",'localhost', '127.0.0.1',"192.168.29.10"]
+ALLOWED_HOSTS = ["192.168.137.129",'localhost', '127.0.0.1',"192.168.29.10","192.168.231.53"]
 
 # Enable cross-origin requests (CORS)
 CORS_ALLOW_ALL_ORIGINS = True

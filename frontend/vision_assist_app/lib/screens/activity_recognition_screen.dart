@@ -3,8 +3,11 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import '../services/voice_helper.dart';  // Ensure the correct path to voice helper
-import '../services/tts_service.dart';   // Ensure the correct path to TTS service
+import '../services/voice_helper.dart'; 
+import '../services/tts_service.dart';  
+import 'package:path_provider/path_provider.dart';  // Required for temporary file storage
+import 'package:record/record.dart';  // To record audio
+import 'package:flutter/services.dart';  // Import for MethodChannel
 
 class ActivityRecognitionScreen extends StatefulWidget {
   @override
@@ -17,12 +20,16 @@ class _ActivityRecognitionScreenState extends State<ActivityRecognitionScreen> {
   bool _isProcessing = false;
   final TtsService _ttsService = TtsService();
   final VoiceHelper _voiceHelper = VoiceHelper();
+  static final platform = MethodChannel('com.example.vision_assist_app/volume_buttons');  // Corrected to final
+  bool _isListening = false;
+  final _record = Record();  // To record audio
 
   @override
   void initState() {
     super.initState();
     _initializeCamera();
     _giveInstructions();
+    _listenForDoubleVolumePress(); // Start listening for double press on volume button
   }
 
   Future<void> _giveInstructions() async {
@@ -38,6 +45,60 @@ class _ActivityRecognitionScreenState extends State<ActivityRecognitionScreen> {
       setState(() {});
     } catch (e) {
       await _ttsService.speak('Camera initialization failed. Please try again.');
+    }
+  }
+
+  /// Listen for double press of the volume button.
+  Future<void> _listenForDoubleVolumePress() async {
+    platform.setMethodCallHandler((call) async {
+      if (call.method == 'volumeUpPressed') {
+        if (!_isListening) {
+          await _recordAudioAndRecognize();  // Start voice recognition on double press
+        }
+      }
+    });
+  }
+
+  /// Record audio and send it to Whisper API for transcription
+  Future<void> _recordAudioAndRecognize() async {
+    _isListening = true;
+
+    // Prepare for recording
+    final tempDir = await getTemporaryDirectory();
+    final filePath = '${tempDir.path}/voice_command.m4a';
+
+    // Start recording
+    if (await _record.hasPermission()) {
+      await _record.start(
+        path: filePath,
+        encoder: AudioEncoder.aacLc, // Set format as AAC
+      );
+
+      await Future.delayed(Duration(seconds: 5));  // Record for 5 seconds
+      await _record.stop();
+
+      // Send audio file to Whisper API
+      File audioFile = File(filePath);
+      String? command = await _voiceHelper.recognizeSpeechWithWhisper(audioFile);
+
+      if (command != null) {
+        _processCommand(command);
+      } else {
+        _ttsService.speak('Sorry, I could not understand the command.');
+      }
+
+      _isListening = false;
+    }
+  }
+
+  /// Process the recognized voice command.
+  void _processCommand(String command) {
+    if (command.toLowerCase().contains('start recording')) {
+      _startVideoRecording();
+    } else if (command.toLowerCase().contains('stop recording')) {
+      _stopVideoRecording();
+    } else {
+      _ttsService.speak('Unknown command. Please say start recording or stop recording.');
     }
   }
 
@@ -72,7 +133,7 @@ class _ActivityRecognitionScreenState extends State<ActivityRecognitionScreen> {
   Future<void> _sendVideoForRecognition(String videoPath) async {
     try {
       var request = http.MultipartRequest(
-        'POST', Uri.parse('http://192.168.137.129:8000/api/activity_recognition/'),  // Replace with your backend URL
+        'POST', Uri.parse('http://192.168.137.129:8000/api/activity_recognition/'),  
       );
 
       // Convert XFile to File and add it to the request

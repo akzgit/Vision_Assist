@@ -2,9 +2,12 @@ import 'dart:io';  // Required for handling file system
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
-import '../services/voice_helper.dart';  // Ensure the correct path to voice helper
-import '../services/tts_service.dart';   // Ensure the correct path to TTS service
+import 'dart:convert';  // To decode the backend response
+import 'package:path_provider/path_provider.dart';  // For temporary file storage
+import 'package:record/record.dart';  // To record audio
+import '../services/voice_helper.dart';   
+import '../services/tts_service.dart';   
+import 'package:flutter/services.dart';  // For MethodChannel communication
 
 class TextReadingScreen extends StatefulWidget {
   @override
@@ -16,17 +19,24 @@ class _TextReadingScreenState extends State<TextReadingScreen> {
   bool _isProcessing = false;
   final TtsService _ttsService = TtsService();
   final VoiceHelper _voiceHelper = VoiceHelper();
+  final _record = Record();  // To record audio
+  bool _isListening = false;
+
+  // Define MethodChannel
+  static const platform = MethodChannel('com.example.vision_assist_app/volume_buttons');
 
   @override
   void initState() {
     super.initState();
     _initializeCamera();
-    _giveInstructions();
+    _giveInstructions();  // Add this to give TTS instructions
+    _listenForDoubleVolumePress();
   }
 
   Future<void> _giveInstructions() async {
     await _voiceHelper.giveInstructions(
-        'You are in the Text Reading section. Tap the screen to capture an image of the text you want to read.');
+      'You are in the Text Reading section. Tap the screen to capture an image for text reading.'
+    );
   }
 
   Future<void> _initializeCamera() async {
@@ -41,7 +51,53 @@ class _TextReadingScreenState extends State<TextReadingScreen> {
       setState(() {});
     } catch (e) {
       await _ttsService.speak('Error initializing camera. Please try again.');
-      print('Error initializing camera: $e');
+    }
+  }
+
+  Future<void> _listenForDoubleVolumePress() async {
+    platform.setMethodCallHandler((call) async {
+      if (call.method == 'volumeUpPressed') {
+        if (!_isListening) {
+          await _recordAudioAndRecognize();
+        }
+      }
+    });
+  }
+
+  Future<void> _recordAudioAndRecognize() async {
+    _isListening = true;
+
+    // Prepare for recording
+    final tempDir = await getTemporaryDirectory();
+    final filePath = '${tempDir.path}/voice_command.m4a';
+
+    if (await _record.hasPermission()) {
+      await _record.start(
+        path: filePath,
+        encoder: AudioEncoder.aacLc,
+      );
+
+      await Future.delayed(Duration(seconds: 5));
+      await _record.stop();
+
+      File audioFile = File(filePath);
+      String? command = await _voiceHelper.recognizeSpeechWithWhisper(audioFile);
+
+      if (command != null) {
+        _processCommand(command);
+      } else {
+        _ttsService.speak('Sorry, I could not understand the command.');
+      }
+
+      _isListening = false;
+    }
+  }
+
+  void _processCommand(String command) {
+    if (command.toLowerCase().contains('read text')) {
+      _readTextFromImage();
+    } else {
+      _ttsService.speak('Unknown command. Please try again.');
     }
   }
 
@@ -69,43 +125,29 @@ class _TextReadingScreenState extends State<TextReadingScreen> {
     try {
       var request = http.MultipartRequest(
         'POST',
-        Uri.parse('http://192.168.137.129:8000/api/read_text/'), // Replace with your backend URL
+        Uri.parse('http://192.168.137.129:8000/api/read_text/'), 
       );
-      File file = File(imagePath); // Convert XFile to File (dart:io)
+      File file = File(imagePath);
       request.files.add(await http.MultipartFile.fromPath('file', file.path));
 
       var response = await request.send();
       if (response.statusCode == 200) {
         var responseData = await response.stream.bytesToString();
-
-        // Print the response to debug
-        print("Backend response: $responseData");
-
         var extractedText = _extractTextFromResponse(responseData);
         await _ttsService.speak('The extracted text is: $extractedText.');
       } else {
-        print('Failed to extract text. Status code: ${response.statusCode}');
         await _ttsService.speak('Failed to extract text from the image.');
       }
     } catch (e) {
-      print("Error in _sendImageForTextReading: $e");
       await _ttsService.speak('Error in reading text from the image. Please try again.');
     }
   }
 
   String _extractTextFromResponse(String response) {
-    // Logic to extract the recognized text from the response
     try {
       var jsonResponse = jsonDecode(response);
-
-      // Check the structure of the response and print it for debugging
-      print("Decoded JSON Response: $jsonResponse");
-
-      // Return the text if found, otherwise return the default message
-      // Ensure the key matches the one returned by your backend
       return jsonResponse['extracted_text'] ?? 'No text found';
     } catch (e) {
-      print("Error in _extractTextFromResponse: $e");
       return 'Unable to extract text from the image.';
     }
   }
@@ -156,6 +198,7 @@ class _TextReadingScreenState extends State<TextReadingScreen> {
   @override
   void dispose() {
     _cameraController?.dispose();
+    _record.dispose();
     super.dispose();
   }
 }

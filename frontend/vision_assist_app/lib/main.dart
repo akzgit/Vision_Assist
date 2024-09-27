@@ -1,13 +1,16 @@
+import 'dart:io';  // Required for File handling
 import 'package:flutter/material.dart';
-import 'services/voice_helper.dart';  // Updated path for services
-import 'screens/welcome_screen.dart';  // Updated path for screens
-import 'screens/face_recognition_screen.dart';  // Updated path for screens
-import 'screens/add_face_screen.dart';  // Updated path for screens
-import 'screens/activity_recognition_screen.dart';  // Updated path for screens
-import 'screens/text_reading_screen.dart';  // Updated path for screens
-import 'screens/currency_detection_screen.dart';  // Updated path for screens
-import 'screens/object_detection_screen.dart';  // Updated path for screens
-import 'screens/image_description_screen.dart';  // Updated path for screens
+import 'package:flutter/services.dart';  
+import 'services/voice_helper.dart';  
+import 'screens/welcome_screen.dart';  
+import 'screens/face_recognition_screen.dart'; 
+import 'screens/add_face_screen.dart';  
+import 'screens/activity_recognition_screen.dart';  
+import 'screens/text_reading_screen.dart';  
+import 'screens/currency_detection_screen.dart';  
+import 'screens/object_detection_screen.dart';  
+import 'screens/image_description_screen.dart';  
+import 'package:record/record.dart';  // For recording audio
 
 void main() {
   runApp(VisionAssistApp());
@@ -22,7 +25,7 @@ class VisionAssistApp extends StatelessWidget {
         primarySwatch: Colors.blue,
         visualDensity: VisualDensity.adaptivePlatformDensity,
       ),
-      home: WelcomeScreen(),  // The welcome screen is shown for first-time users
+      home: WelcomeScreen(), 
     );
   }
 }
@@ -34,25 +37,70 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final VoiceHelper _voiceHelper = VoiceHelper();  // For handling voice instructions and listening
+  bool _isListening = false;
+  static final MethodChannel platform = MethodChannel('com.example.vision_assist_app/volume_buttons');
+  final _record = Record();  // For recording audio
 
   @override
   void initState() {
     super.initState();
     _startVoiceControl();
+    _listenForDoubleVolumePress();
   }
 
   Future<void> _startVoiceControl() async {
     // Give the user instructions using TTS
     await _voiceHelper.giveInstructions('Please select a feature or say the feature name.');
-    // Listen for the user's voice command
-    String? command = await _voiceHelper.listenForCommand();
+    
+    // Record and recognize voice command
+    String? command = await _recordAudioAndRecognize();
     if (command != null) {
       _handleVoiceCommand(command);  // Handle the recognized voice command
     }
   }
 
+  /// Listens for double press of the volume button to trigger voice command recognition.
+  Future<void> _listenForDoubleVolumePress() async {
+    platform.setMethodCallHandler((call) async {
+      if (call.method == 'volumeUpPressed') {
+        if (!_isListening) {
+          await _recordAudioAndRecognize();
+        }
+      }
+    });
+  }
+
+  /// Records audio for 5 seconds and sends it to Whisper API for transcription.
+  Future<String?> _recordAudioAndRecognize() async {
+    _isListening = true;
+
+    // Prepare for recording
+    final tempDir = await getTemporaryDirectory();
+    final filePath = '${tempDir.path}/voice_command.m4a';
+
+    if (await _record.hasPermission()) {
+      await _record.start(
+        path: filePath,
+        encoder: AudioEncoder.aacLc, // Set format as AAC
+      );
+
+      await Future.delayed(Duration(seconds: 5));  // Record for 5 seconds
+      await _record.stop();
+
+      // Send audio file to Whisper API
+      File audioFile = File(filePath);
+      String? command = await _voiceHelper.recognizeSpeechWithWhisper(audioFile);
+
+      _isListening = false;
+
+      return command;
+    } else {
+      return null;
+    }
+  }
+
+  /// Handle the recognized voice command and navigate to the appropriate screen.
   void _handleVoiceCommand(String command) {
-    // Handle navigation based on voice commands
     if (command.toLowerCase().contains('face recognition')) {
       _navigateToScreen(FaceRecognitionScreen(), 'Face Recognition');
     } else if (command.toLowerCase().contains('add face')) {
@@ -74,7 +122,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Helper function to handle navigation and TTS for feature selection
+  /// Helper function to handle navigation and TTS for feature selection.
   void _navigateToScreen(Widget screen, String feature) {
     _voiceHelper.giveInstructions('$feature selected.');
     Navigator.push(context, MaterialPageRoute(builder: (context) => screen));
@@ -100,7 +148,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Helper function to build ListTile with navigation
+  /// Helper function to build ListTile with navigation.
   Widget _buildListTile(String title, Widget screen) {
     return ListTile(
       title: Text(title),

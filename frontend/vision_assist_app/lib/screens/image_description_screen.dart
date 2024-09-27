@@ -1,10 +1,10 @@
 import 'dart:io';  // Required for handling file system
+import 'dart:convert';  // Required for JSON decoding
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
-import '../services/voice_helper.dart';  // Ensure the correct path to voice helper
-import '../services/tts_service.dart';   // Ensure the correct path to TTS service
+import '../services/voice_helper.dart';  
+import '../services/tts_service.dart';  
 
 class ImageDescriptionScreen extends StatefulWidget {
   @override
@@ -70,7 +70,7 @@ class _ImageDescriptionScreenState extends State<ImageDescriptionScreen> {
     try {
       var request = http.MultipartRequest(
         'POST',
-        Uri.parse('http://192.168.137.129:8000/api/describe_image/'),  // Replace with your backend URL
+        Uri.parse('http://192.168.137.129:8000/api/describe_image/'),  
       );
       File file = File(imagePath);  // Convert XFile to File (dart:io)
       request.files.add(await http.MultipartFile.fromPath('file', file.path));

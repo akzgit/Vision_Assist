@@ -1,7 +1,7 @@
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 class SpeechService {
-  late stt.SpeechToText _speech;  // Mark the field as late
+  late stt.SpeechToText _speech;  
   bool _isAvailable = false;
   bool _isListening = false;
 
@@ -28,13 +28,13 @@ class SpeechService {
       onResult: (result) {
         recognizedText = result.recognizedWords;
       },
-      listenFor: Duration(seconds: 5),  // Adjust duration as needed
-      localeId: 'en_US',  // You can change this to your locale (e.g., 'en_IN' for India)
+      listenFor: Duration(seconds: 10),  // Increased listening duration to 10 seconds
+      localeId: 'en_US',  // Adjust the locale if needed
       cancelOnError: true,
       partialResults: false,  // Only return complete results
     );
 
-    await Future.delayed(Duration(seconds: 5));  // Wait for the listening process to complete
+    await Future.delayed(Duration(seconds: 10));  // Wait for the listening process to complete
 
     _speech.stop();  // Stop listening after the specified time
     _isListening = false;

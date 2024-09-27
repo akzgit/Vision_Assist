@@ -1,11 +1,16 @@
 import 'dart:io';  // Required for handling file system
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
-import 'dart:async';
-import '../services/voice_helper.dart';  // Ensure the correct path to voice helper
-import '../services/tts_service.dart';   // Ensure the correct path to TTS service
+import 'dart:convert';  // For JSON decoding
+import 'package:permission_handler/permission_handler.dart';
+import 'package:record/record.dart';  // To record audio for Whisper API
+import '../services/voice_helper.dart';  
+import '../services/tts_service.dart';   
+import 'package:path_provider/path_provider.dart';  // For temporary storage
+import 'package:flutter/services.dart';  // Import MethodChannel
+import 'welcome_screen.dart'; 
 
 class ObjectDetectionScreen extends StatefulWidget {
   @override
@@ -18,20 +23,19 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen> {
   bool _isProcessing = false;  // To track if we are processing a frame
   final TtsService _ttsService = TtsService();
   final VoiceHelper _voiceHelper = VoiceHelper();
+  final _record = Record();  // To record audio for Whisper API
+  bool _isListening = false;
 
-  Queue<String> _voiceQueue = Queue();  // Queue for voice outputs
-  bool _isSpeaking = false;  // To track if voice output is happening
+  // Define MethodChannel
+  static const platform = MethodChannel('com.example.vision_assist_app/volume_buttons');
 
   @override
   void initState() {
     super.initState();
     _initializeCamera();
-    _giveInstructions();
-    _processVoiceQueue();  // Start processing the voice queue
-  }
-
-  Future<void> _giveInstructions() async {
-    await _voiceHelper.giveInstructions('You are in the Object Detection section. Tap the screen to start detecting objects.');
+    _requestPermissions();
+    _listenForDoubleVolumePress();
+    _speakTapToDetectMessage();  // Announce tap-to-detect message when the screen starts
   }
 
   Future<void> _initializeCamera() async {
@@ -41,15 +45,83 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen> {
     setState(() {});
   }
 
+  Future<void> _requestPermissions() async {
+    await [Permission.microphone, Permission.camera].request();
+  }
+
+  Future<void> _listenForDoubleVolumePress() async {
+    platform.setMethodCallHandler((call) async {
+      if (call.method == 'volumeUpPressed') {
+        if (!_isListening) {
+          await _recordAudioAndRecognize();
+        }
+      }
+    });
+  }
+
+  /// Record audio and send it to Whisper API for transcription
+  Future<void> _recordAudioAndRecognize() async {
+    _isListening = true;
+
+    // Prepare for recording
+    final tempDir = await getTemporaryDirectory();
+    final filePath = '${tempDir.path}/voice_command.m4a';
+
+    // Start recording
+    if (await _record.hasPermission()) {
+      await _record.start(
+        path: filePath,
+        encoder: AudioEncoder.aacLc,  // Set format as AAC
+      );
+
+      await Future.delayed(Duration(seconds: 5));  // Record for 5 seconds
+      await _record.stop();
+
+      // Send audio file to Whisper API
+      File audioFile = File(filePath);
+      String? command = await _voiceHelper.recognizeSpeechWithWhisper(audioFile);
+
+      if (command != null) {
+        _processCommand(command);
+      } else {
+        _ttsService.speak('Sorry, I could not understand the command.');
+      }
+
+      _isListening = false;
+    }
+  }
+
+  /// Process the recognized voice command.
+  void _processCommand(String command) async {
+    if (command.toLowerCase().contains('start')) {
+      _startLiveStream();
+    } else if (command.toLowerCase().contains('stop')) {
+      _stopLiveStream();
+    } else if (command.toLowerCase().contains('back') || 
+               command.toLowerCase().contains('go back') ||
+               command.toLowerCase().contains('go to home') || 
+               command.toLowerCase().contains('home')) {
+      await _ttsService.speak('Going back to home screen.');
+      await Future.delayed(Duration(seconds: 1));  // Add a delay before navigating back
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => WelcomeScreen()),
+      );
+    }
+  }
+
   Future<void> _startLiveStream() async {
     if (_cameraController != null && !_isStreaming) {
       setState(() {
         _isStreaming = true;
       });
-
-      // Begin the streaming of frames
-      _streamFrames();
+      _giveInstructionsAndStreamFrames();
     }
+  }
+
+  Future<void> _giveInstructionsAndStreamFrames() async {
+    await _ttsService.speak('Tap the screen to start detecting objects. Point the phone at the object you want to identify.');
+    _streamFrames();
   }
 
   Future<void> _streamFrames() async {
@@ -80,7 +152,7 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen> {
 
     try {
       var request = http.MultipartRequest(
-        'POST', Uri.parse('http://192.168.137.129:8000/api/object_detection/'),  // Replace with your backend URL
+        'POST', Uri.parse('http://192.168.137.129:8000/api/object_detection/'),  
       );
       File file = File(imagePath);  // Convert XFile to File (dart:io)
       request.files.add(await http.MultipartFile.fromPath('file', file.path));
@@ -89,12 +161,12 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen> {
       if (response.statusCode == 200) {
         var responseData = await response.stream.bytesToString();
         var objects = _extractDetectedObjects(responseData);
-        _queueDetectedObjects(objects);  // Queue the detected objects for voice output
+        await _announceDetectedObjects(objects);
       } else {
-        _queueDetectedObjectsMessage('Failed to detect objects.');
+        await _ttsService.speak('Failed to detect objects.');
       }
     } catch (e) {
-      _queueDetectedObjectsMessage('Error in detecting objects. Please try again.');
+      await _ttsService.speak('Error in detecting objects. Please try again.');
     } finally {
       setState(() {
         _isProcessing = false;
@@ -102,49 +174,28 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen> {
     }
   }
 
+  /// Extract detected objects with confidence greater than 30%
   List<Map<String, dynamic>> _extractDetectedObjects(String response) {
-    // Assuming the backend returns a JSON with detected objects
     try {
       var jsonResponse = jsonDecode(response);
       List<dynamic> objects = jsonResponse['detected_objects'] ?? [];
-      // Filtering out objects with confidence greater than 30%
+      // Filter objects with confidence greater than 30%
       return objects.where((object) => object['confidence'] > 0.3).toList().cast<Map<String, dynamic>>();
     } catch (e) {
       return [];
     }
   }
 
-  void _queueDetectedObjects(List<Map<String, dynamic>> objects) {
+  /// Announce detected objects with their confidence levels
+  Future<void> _announceDetectedObjects(List<Map<String, dynamic>> objects) async {
     if (objects.isEmpty) {
-      _queueDetectedObjectsMessage('No objects detected.');
+      await _ttsService.speak('No objects detected.');
     } else {
-      StringBuffer detectedMessage = StringBuffer();
+      StringBuffer detectedMessage = StringBuffer('Detected ');
       for (var object in objects) {
-        detectedMessage.write(
-            '${object['name']} with ${((object['confidence'] as double) * 100).toStringAsFixed(1)} percent confidence. ');
+        detectedMessage.write('${object['name']} with ${(object['confidence'] * 100).toStringAsFixed(1)}% confidence. ');
       }
-      _voiceQueue.add(detectedMessage.toString());
-    }
-  }
-
-  void _queueDetectedObjectsMessage(String message) {
-    _voiceQueue.add(message);  // Queue the voice message
-  }
-
-  // Function to handle the voice output queue
-  Future<void> _processVoiceQueue() async {
-    while (true) {
-      if (_voiceQueue.isNotEmpty && !_isSpeaking) {
-        setState(() {
-          _isSpeaking = true;
-        });
-        String message = _voiceQueue.removeFirst();
-        await _ttsService.speak(message);  // Ensure the voice output finishes before the next one
-        setState(() {
-          _isSpeaking = false;
-        });
-      }
-      await Future.delayed(Duration(milliseconds: 500));  // Check queue every 500ms
+      await _ttsService.speak(detectedMessage.toString());
     }
   }
 
@@ -152,15 +203,11 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen> {
     setState(() {
       _isStreaming = false;
     });
+    _ttsService.speak('Live streaming stopped.');
   }
 
-  // Function triggered when the user taps the screen
-  void _handleTap() {
-    if (_isStreaming) {
-      _stopLiveStream();
-    } else {
-      _startLiveStream();
-    }
+  Future<void> _speakTapToDetectMessage() async {
+    await _ttsService.speak("Tap the screen to start detecting objects. Point the phone at the object you want to identify.");
   }
 
   @override
@@ -169,25 +216,25 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen> {
       return Center(child: CircularProgressIndicator());
     }
 
-    return GestureDetector(
-      onTap: _handleTap,  // Tap the screen to start or stop live streaming
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text('Object Detection'),
-        ),
-        body: Column(
-          children: [
-            Expanded(
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Object Detection'),
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: GestureDetector(
+              onTap: _isStreaming ? _stopLiveStream : _startLiveStream,
               child: CameraPreview(_cameraController!),
             ),
-            if (_isProcessing) ...[
-              SizedBox(height: 16),
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text('Processing frame, please wait...'),
-            ],
+          ),
+          if (_isProcessing) ...[
+            SizedBox(height: 16),
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('Processing frame, please wait...'),
           ],
-        ),
+        ],
       ),
     );
   }
@@ -195,6 +242,7 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen> {
   @override
   void dispose() {
     _cameraController?.dispose();
+    _record.dispose();
     super.dispose();
   }
 }

@@ -10,10 +10,10 @@ class TtsService {
 
   /// Initializes the TTS engine with basic settings.
   void _initializeTts() async {
-    await _flutterTts.setLanguage('en-US');  // Set to your desired language (e.g., 'en-IN' for Indian English)
-    await _flutterTts.setSpeechRate(0.5);    // Set speech rate (1.0 is the normal speed, slower is more understandable)
-    await _flutterTts.setVolume(1.0);        // Set volume (1.0 is the maximum)
-    await _flutterTts.setPitch(1.0);         // Set pitch (1.0 is default, lower is deeper voice, higher is lighter)
+    await _flutterTts.setLanguage('en-US'); 
+    await _flutterTts.setSpeechRate(0.5);    
+    await _flutterTts.setVolume(1.0);        
+    await _flutterTts.setPitch(1.0);        
 
     // Set up listeners for speaking status
     _flutterTts.setStartHandler(() {
